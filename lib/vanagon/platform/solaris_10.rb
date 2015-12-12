@@ -18,7 +18,7 @@ class Vanagon
         # required more string manipulation anyway. the string should be formatted like so:
         #         && ($$3 ~ /directory\/regex.*/ || $$3 ~ /another\/directory\/regex.*/)
         # for as many iterations as there are directries in the package
-        pkgdirs = project.get_root_directories.map{ |dir| dir.sub(/^\//, "").gsub(/[\/]/, "\\/").gsub(/\./, "\\.") + '.*'}
+        pkgdirs = project.get_root_directories.map{ |dir| dir.sub(/^\//, "").gsub(/([\/\.])+/, '\\\\\1') + '.*'}
         explicit_search_string = "&& ("
         pkgdirs.each do |dir_regex|
           explicit_search_string += "|| $$3 ~ /" + dir_regex + "/"
