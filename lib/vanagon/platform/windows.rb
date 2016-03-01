@@ -53,55 +53,77 @@ class Vanagon
       # @param name [String] name of the project
       # @param binding [Binding] binding to use in evaluating the packaging templates
       def generate_msi_packaging_artifacts(workdir, name, binding)
-        # Copy the project specific files first
-        copy_from_project("./resources/windows/wix", workdir)
-        merge_defaults_from_vanagon(File.join(VANAGON_ROOT, "resources/windows/wix"), "#{workdir}/wix")
-        process_templates("#{workdir}/wix", binding)
+        vanagon_wix_path = File.join(VANAGON_ROOT, "resources/windows/wix")
+        wix_files = []
+        # Populate the list containing all wix files in the project under resources/wix
+        wix_files = generate_wix_file_list(Dir.glob("./resources/windows/wix/**/*.*"), "./resources/windows/wix", wix_files)
+        # Fill in any generic files  from vanagon that do not exist in the list yet
+        wix_files = generate_wix_file_list(Dir.glob(File.join(vanagon_wix_path, "**/*.*")), vanagon_wix_path, wix_files)
+        # Copy files to working directory
+        copy_wix_files(wix_files, File.join(workdir, "wix"), binding)
       end
 
-      # Method to recursively copy from a source project resource directory
-      # to a destination (wix) work directory.
-      # strongly suspect the original cp_r command would have done all of this.
+
+      # Method to add all files not already in the list to the list of files
       #
-      # @param proj_resources [String] Project Resource File directory
-      # @param destination [String] Destination directory
-      # @param verbose [String] True or false
-      def copy_from_project(proj_resources, destination, verbose: false)
-        FileUtils.cp_r(proj_resources, destination, :verbose => verbose)
+      # @param file_list [array of files] list of files (can be empty)
+      # @param root [String] directory that the list of files is contained in
+      # @param wix_file_list [Array of Hashes of Pathnames] list of files so far
+      #
+      # Note that the reason we carry around absolute_path (and the reason there
+      # is a hash) is because we need it for the copy over in the copy_wix_files function
+      def generate_wix_file_list(file_list, root, wix_file_list)
+        file_list.each do |file|
+          absolute_path = Pathname.new(file)
+          relative_path = absolute_path.relative_path_from(Pathname.new(root))
+          next if relative_path_exists(relative_path, wix_file_list)
+          wix_file_list.push({ :absolute_path => absolute_path, :relative_path => relative_path })
+        end
+        return wix_file_list
       end
 
-      # Method to merge in the files from the Vanagon (generic) directories.
-      # Project Specific files take precedence, so since these are copied prior
-      # to this function, then this merge operation will ignore existing files
+      # Method to check if file is already in the list of files
       #
-      # @param vanagon_root [String] Vanagon wix resources directory
-      # @param destination [String] Destination directory
-      # @param verbose [String] True or false
-      def merge_defaults_from_vanagon(vanagon_root, destination, verbose: false)
-        # Will use this Pathname object for relative path calculations in loop below.
-        vanagon_path = Pathname.new(vanagon_root)
-        files = Dir.glob(File.join(vanagon_root, "**/*.*"))
-        files.each do |file|
-          # Get Pathname for incoming file using Pathname library
-          src_pathname = Pathname.new(file).dirname
-          # This Pathname method allows us to effectively "subtract" the leading vanagon_path
-          # from the source filename path. This gives us a pathname fragment that we can
-          # then append to the target directory, preserving the files place in the directory
-          # tree relative to the parent.
-          # See following article for example:
-          # http://stackoverflow.com/questions/12093770/ruby-removing-parts-a-file-path
-          # and http://ruby-doc.org/stdlib-2.1.0/libdoc/pathname/rdoc/Pathname.html#method-i-relative_path_from
-          dest_pathname_fragment = src_pathname.relative_path_from(vanagon_path)
-          target_dir = File.join(destination, dest_pathname_fragment.to_s)
-          # Create the target directory if necessary.
-          FileUtils.mkdir_p(target_dir) unless File.exists?(target_dir)
-          # Skip the file copy if either target file or ERB equivalent exists.
-          # This means that any files already in place in the work directory as a
-          # result of being copied from the project specific area will not be
-          # overritten.
-          next if File.exists?(Pathname.new(target_dir) + File.basename(file))
-          next if File.exists?(Pathname.new(target_dir) + File.basename(file, ".erb"))
-          FileUtils.cp(file, target_dir, :verbose => verbose)
+      # @param file_to_check [String] file to check for in list
+      # @param list_of_files [Array of Hashes of Pathnames] list of files
+      def relative_path_exists(file_to_check, list_of_files)
+        # strip the ERB ext from the file to check
+        # Could this be a function? Yes. Will ruby fail
+        # if you try to make this a function? Also yes.
+        # Do I know why? not in the slightest
+        #         -Sean
+        stripped_check_file = file_to_check
+        if stripped_check_file.extname.eql?(".erb")
+          stripped_check_file = File.basename(file_to_check, ".erb")
+        end
+        list_of_files.each do |file_from_list|
+          # strip ERB ext from the list file to check against
+          stripped_list_file = file_from_list[:relative_path]
+          if stripped_list_file.extname.eql?(".erb")
+            stripped_list_file = File.basename(file_from_list[:relative_path], ".erb")
+          end
+          if stripped_check_file.to_s.eql? stripped_list_file.to_s
+            return true
+          end
+        end
+        return false
+      end
+
+      # Method to copy files from all local sources to the workdir
+      #
+      # @param file_list [Array of Hashes of Pathnames] a list of hashes containing
+      #                  Pathname objects: absolute_path, relative_path
+      # @param destination [String] Working directory to copy files to
+      # @param binding [Binding] binding to use in evaluating the packaging templates
+      # @param @optional verbose [bool] defines output of cp function
+      def copy_wix_files(file_list, destination, binding, verbose: false)
+        file_list.each do |file|
+          destination_path = Pathname.new(File.join(destination, file[:relative_path]))
+          FileUtils.mkdir_p(destination_path.parent)
+          FileUtils.cp(file[:absolute_path], destination_path, :verbose => verbose)
+          if file[:relative_path].extname.eql?(".erb")
+            process_template(File.join(destination, file[:relative_path]), binding)
+          end
         end
       end
 
@@ -109,13 +131,11 @@ class Vanagon
       #
       # @param workdir [String] working directory to stage the evaluated templates in
       # @param binding [Binding] binding to use in evaluating the packaging templates
-      def process_templates(wixworkdir, binding)
-        files = Dir.glob(File.join(wixworkdir, "**/*.erb"))
-        files.each do |file|
-          erb_file(file, File.join(File.dirname(file), File.basename(file, ".erb")), false, { :binding => binding })
-          FileUtils.rm(file)
-        end
+      def process_template(file, binding)
+        erb_file(file, File.join(File.dirname(file), File.basename(file, ".erb")), false, { :binding => binding })
+        FileUtils.rm(file)
       end
+
 
       # Method to generate the files required to build a nuget package for the project
       #
