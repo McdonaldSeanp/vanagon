@@ -130,7 +130,11 @@ class Vanagon
     # sane defaults.
     def retry_task(&block)
       @timeout = @project.timeout || 3600
-      @retry_count = @project.retry_count || 3
+      if ENV['VANAGON_RETRY_COUNT']
+        @retry_count = ENV['VANAGON_RETRY_COUNT'].to_i
+      else
+        @retry_count = @project.retry_count || 1
+      end
       Vanagon::Utilities.retry_with_timeout(@retry_count, @timeout) { yield }
     end
     private :retry_task
